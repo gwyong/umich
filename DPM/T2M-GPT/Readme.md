@@ -4,8 +4,8 @@ This repository contains a modified version of the T2M-GPT code for generating m
 
 ## Demo
 You can see a demo of the generated motion in the following GIF:
-![Demo](A_person_squat_to_carry_up_something_mass.gif)
-prompt: `A person squat to carry up something mass.`
+![Demo](A_person_squat_to_carry_up_something_mass.gif)  
+prompt: A person squat to carry up something mass.
 ## Contributors
 
 - [Gunwoo Yong](https://github.com/gwyong)
