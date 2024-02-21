@@ -1,7 +1,7 @@
 # Human Robot Collaboration with Meta Learning
 
 ## Project Overview
-This project focuses on enhancing Human-Robot Collaboration (HRC) in construction environments, specifically during brick-laying tasks with a KUKA robot. Previous studies have identified the range of emotions experienced by construction workers when interacting with robots. Recognizing the variability in individual emotional responses, we aim to create personalized models to better adapt robot behavior to human emotions. To achieve this, we use Meta Learning techniques to determine initial model weights based on a small sample of personalized data, allowing for more effective and empathetic human-robot interactions.
+This project focuses on enhancing Human-Robot Collaboration (HRC) in construction environments, specifically during brick-laying tasks with a KUKA robot. Previous studies have identified the range of emotions experienced by construction workers when interacting with robots. Recognizing the variability in individual emotional responses, we aim to create personalized models to better adapt robot behavior to human emotions. To achieve this, we used Meta Learning techniques to determine initial model weights based on a small sample of personalized data, allowing for more effective and empathetic human-robot interactions. We also leveraged a Reinforcement Learning (RL) technique to be adapted within diverse states between workers and robots. The main RL code is described in [Leyang's repository](https://github.com/LeyangWen/meta-q-learning).
 
 ## Usage
 The project consists of two main components: model.py and run.ipynb.
