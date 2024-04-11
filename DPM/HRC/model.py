@@ -7,6 +7,8 @@ import torch.nn.functional as F
 import torch.utils.data as data
 import torch.optim as optim
 
+from torch.distributions import Categorical, Beta, Normal
+
 device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
 
 class TrueHumanResponse():
@@ -78,7 +80,7 @@ class TrueHumanResponse():
 
 class HumanResponseNet(nn.Module):
     """
-    Predict human response (valance and arousal) based on the HRC robot state
+    Predict human response (valance and arousal) based on the HRC robot state (5 dimension)
     """
     def __init__(self, input_size=5, hidden_size=32, output_size=2, dropout_rate=0):  # dropout too aggressive for online learning
         super(HumanResponseNet, self).__init__()
@@ -124,7 +126,7 @@ class HumanResponseMAML():
         self.K       = K
         self.TrueHumanResponse = TrueHumanResponse(
             valence_csv_path="valence_merge.csv", arousal_csv_path="arousal_merge.csv",
-            num_subjects=18, seed=0
+            num_subjects=12, seed=0
         )
 
         self.criterion      = nn.MSELoss()
@@ -183,7 +185,7 @@ class HumanResponseMAML():
                 print(f"Epoch {str(epoch)} completed")
 
 
-def train_supervised(subject_id=0, sample_size=32, num_epochs=100, batch_size=32, net_supervised=None, device=None):
+def train_supervised(subject_id=0, sample_size=32, num_epochs=100, batch_size=32, net_supervised=None, pretrained_pth_path=None, device=None):
     True_HumanResponse = TrueHumanResponse(valence_csv_path="valence_merge.csv",
                                         arousal_csv_path="arousal_merge.csv",
                                         num_subjects=18, seed=0)
@@ -220,6 +222,8 @@ def train_supervised(subject_id=0, sample_size=32, num_epochs=100, batch_size=32
     y_stacked_tensor = torch.stack(y_tensors_list).to(device) # shape (size, 2)
 
     net_supervised = net_supervised.to(device)
+    if pretrained_pth_path is not None:
+        net_supervised.load_state_dict(torch.load(pretrained_pth_path))
     criterion = nn.MSELoss()
     optimizer = optim.Adam(list(net_supervised.parameters()), 1e-3)
     
@@ -248,196 +252,153 @@ def train_supervised(subject_id=0, sample_size=32, num_epochs=100, batch_size=32
     return net_supervised
 
 
+def scale_action(prob, min_action, max_action):
+    """
+    From a sampled value (probability within the range of 0 to 1),
+    convert the value into a real continuous value (e.g., robot movement speed). 
+    """
+    scaled_action = min_action + prob*(max_action-min_action)
+    return scaled_action
+
+def inverse_scale_action(scaled_action, min_action, max_action):
+    """
+    Inverse version of the function, scale_action
+    """
+    prob = (scaled_action - min_action) / (max_action - min_action)
+    return prob
+
+def enforce_sample(sample):
+    """
+    Each mu is in the range of (0, 1).
+    Given this mu, when sampling, the sampled value can be larger than 1 and smaller than 0.
+    To make the sampled value still be in the range of (0, 1), designed this function. 
+    """
+    return torch.clamp(sample, 0, 1)
+
+def enforce_prob(prob, prob_epsilon=1e-5):
+    return torch.clamp(prob, prob_epsilon, 1-prob_epsilon)
+
+def enforce_alpha_beta(ab, ab_epsilon=1e-5):
+    ab = torch.where(torch.isnan(ab), torch.tensor(ab_epsilon, device=ab.device), ab)
+    ab = torch.where(torch.isnan(ab), torch.tensor(ab_epsilon, device=ab.device), ab)
+    return ab
+
+
 class ActorCritic(nn.Module):
-    def __init__(self, state_dim=5, hidden_dim=128, action_dim=72):
-        """
-        Args:
-            state_dim  >> [robot movement speed, arm swing speed, proximity, level of autonomy, leader of collaboration]
-            action_dim >> [+0-, +0-, on/off, on/off, on/off]
-        """
-        super(ActorCritic, self).__init__()
-        self.layers = nn.Sequential(
-            nn.Linear(state_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-        )
-        self.actor  = nn.Linear(hidden_dim, action_dim)
-        self.critic = nn.Linear(hidden_dim, 1)
-
-    def forward(self, state):
-        state_embd = self.layers(state)
-        return self.actor(state_embd), self.critic(state_embd)
-    
-
-class ContinousActorCritic(nn.Module):
-    def __init__(self, state_dim=3, hidden_dim=64, action_dim=5):
+    def __init__(self, state_dim=3, hidden_dim=64, action_dim=5, std=0.1):
         """
         Args:
             state_dim >> [current productivity, current valence, current arousal]
             NOTE: productivity range scale (0, >271) is larger than valence/arousal range scale (-10, 10).
         """
-        super(ContinousActorCritic, self).__init__()
+        super(ActorCritic, self).__init__()
         self.layers = nn.Sequential(
             nn.Linear(state_dim, hidden_dim),
             nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
+            nn.Linear(hidden_dim, hidden_dim*2),
+            nn.ReLU(),
+            nn.Linear(hidden_dim*2, hidden_dim),
             nn.ReLU(),
         )
-        self.actor_mu    = nn.Linear(hidden_dim, action_dim)
-        self.actor_sigma = nn.Linear(hidden_dim, 2)
+        self.actor = nn.Linear(hidden_dim, action_dim) # mu1, mu2, bin1, bin2, bin3
         self.critic = nn.Linear(hidden_dim, 1)
-
+        self.std = std
+        self.move_speed_boundary = (27.8, 143.8)
+        self.arm_speed_boundary  = (23.8, 109.1)
+    
     def forward(self, state):
         """
         Return:
-            By using torch.tanh, enforce the range of output to be within (-1, 1)
+            By using torch.sigmoid, enforce the range of output (i.e., mus and binaries) to be within (0, 1)
             self.critic >> Estimated state value function
         """
         state_embd = self.layers(state)
-        return torch.tanh(self.actor_mu(state_embd)), torch.sigmoid(self.actor_sigma(state_embd)), self.critic(state_embd)
+        return torch.sigmoid(self.actor(state_embd)), self.critic(state_embd)
+    
+    def sample(self, state):
+        probs, _ = self.forward(state)
+        mu1, mu2 = probs[0], probs[1]
+        bin_probs = probs[2:]
+        
+        dist1 = Normal(mu1, self.std)
+        action1 = dist1.sample()
+        action1 = enforce_sample(action1)
+        log_prob1 = dist1.log_prob(action1) #TODO: Check the order between enforce_sample and log_prob
+
+        dist2 = Normal(mu2, self.std)
+        action2 = dist2.sample()
+        action2 = enforce_sample(action2)
+        log_prob2 = dist2.log_prob(action2)
+
+        bin_actions = (bin_probs > 0.5).float()
+        bin_actions[bin_actions == 0] = -1 # [0, 1] swith to [-1, 1] TODO: Check binary action values.
+        return dist1, dist2, action1, action2, bin_actions, log_prob1, log_prob2, bin_probs
+
+    def sample_log_prob(self, state, action):
+        """
+        From multiple probability distributions,
+        we want to get a single probability.
+        Since each probablity is independent, we multiplied them.
+        When identifying the final single probability, consider the below formula.
+            log(p1*p2) = log(p1) + log(p2)
+        """
+        probs, _ = self.forward(state)
+        mu1, mu2 = probs[:, 0], probs[:,1]
+        bin_probs = probs[:, 2:]
+
+        dist1 = Normal(mu1, self.std)
+        dist2 = Normal(mu2, self.std)
+
+        move_speed = action[:,0]
+        prob1 = inverse_scale_action(move_speed, self.move_speed_boundary[0], self.move_speed_boundary[1])
+        
+        log_prob1 = dist1.log_prob(prob1.unsqueeze(1))
+        
+        arm_speed  = action[:,1]
+        prob2 = inverse_scale_action(arm_speed, self.arm_speed_boundary[0], self.arm_speed_boundary[1])
+        log_prob2 = dist2.log_prob(prob2.unsqueeze(1))
+
+        bin_actions = action[:,2:]
+        
+        log_bin_probs = torch.where(
+            (bin_actions == 1) & (bin_probs > 0.5), bin_probs,
+            torch.where(
+                (bin_actions == 1) & (bin_probs <= 0.5), 1 - bin_probs,
+                torch.where(
+                    (bin_actions == -1) & (bin_probs > 0.5), 1 - bin_probs,
+                    bin_probs
+                )
+            )
+        )
+        log_probs = torch.cat((log_prob1, log_prob2, log_bin_probs), dim=1).sum(dim=1, keepdim=True)
+        return log_probs
 
 
 class PPO(nn.Module):
-    def __init__(self, AC_state_dim=5, AC_hidden_dim=128, AC_action_dim=72, learning_rate=1e-3,
-                 K_epoch=3, gamma=0.98, lmbda=0.95, eps_clip=0.1,
+    """
+    Note that our PPO considered multiple continous action spaces.
+    """
+    def __init__(self, state_dim, hidden_dim, action_dim, std=0.1, learning_rate=5e-5,
+                 K_epochs=3, gamma=0.98, lmbda=0.95, eps_clip=0.1,
                  device=False):
         super(PPO, self).__init__()
-        self.data = []
-        
-        self.actorCritic = ActorCritic(state_dim=AC_state_dim, hidden_dim=AC_hidden_dim, action_dim=AC_action_dim)
-        if device:
-            self.actorCritic = self.actorCritic.to(device)
-        self.optimizer = optim.Adam(self.parameters(), lr=learning_rate)
-        
-        self.K_epoch = K_epoch
-        self.gamma = gamma
-        self.lmbda = lmbda
-        self.eps_clip = eps_clip
-
-        self.MSEloss = nn.MSELoss()
+        self.AC = ActorCritic(state_dim=state_dim, hidden_dim=hidden_dim, action_dim=action_dim, std=std)
         self.device = device
-
-    def get_pi(self, x, softmax_dim=0):
-        x, _ = self.actorCritic(x)
-        prob = F.softmax(x, dim=softmax_dim)
-        return prob
-    
-    def get_v(self, x):
-        _, v = self.actorCritic(x)
-        return v
-    
-    def put_data(self, transition):
-        self.data.append(transition)
-    
-    def make_batch(self):
-        s_lst, a_lst, r_lst, s_prime_lst, prob_a_lst, done_lst = [], [], [], [], [], []
-        for transition in self.data:
-            s, a, r, s_prime, prob_a, done = transition
-            
-            s_lst.append(s)
-            a_lst.append([a])
-            r_lst.append([r])
-            s_prime_lst.append(s_prime)
-            prob_a_lst.append([prob_a])
-            done_mask = 0 if done else 1
-            done_lst.append([done_mask])
-        
-        s = torch.stack(s_lst, dim=0)
-        a = torch.tensor(a_lst)
-        r = torch.tensor(r_lst)
-        s_prime = torch.stack(s_prime_lst, dim=0)
-        done_mask = torch.tensor(done_lst, dtype=torch.float)
-        prob_a = torch.tensor(prob_a_lst)
-
-        self.data = []
-        return s, a, r, s_prime, done_mask, prob_a
-
-    def train_net(self):
-        s, a, r, s_prime, done_mask, prob_a = self.make_batch()
-
-        for i in range(self.K_epoch):
-            td_target = r.to(self.device) + self.gamma * self.get_v(s_prime.to(device)) * done_mask.to(self.device)
-            delta = td_target - self.get_v(s.to(self.device))
-            delta = delta.cpu().detach().numpy()
-
-            advantage_lst = []
-            advantage = 0.0
-            for delta_t in delta[::-1]:
-                advantage = self.gamma * self.lmbda * advantage + delta_t[0]
-                advantage_lst.append([advantage])
-            advantage_lst.reverse()
-            advantage = torch.tensor(advantage_lst, dtype=torch.float)
-
-            pi    = self.get_pi(s.to(self.device), softmax_dim=1)
-            pi_a  = pi.gather(1,a.to(self.device))
-            ratio = torch.exp(torch.log(pi_a) - torch.log(prob_a.to(self.device)))  # a/b == exp(log(a)-log(b))
-
-            surr1 = ratio * advantage.to(self.device)
-            surr2 = torch.clamp(ratio, 1-self.eps_clip, 1+self.eps_clip) * advantage.to(self.device)
-            # loss  = -torch.min(surr1, surr2) + F.smooth_l1_loss(td_target.detach(), self.get_v(s.to(self.device)))
-            loss  = -torch.min(surr1, surr2) + self.MSEloss(td_target.detach(), self.get_v(s.to(self.device)))
-            
-            """
-            If we want to use the entropy term to explore more, please use the below codes.
-            """
-            # dist = Categorical(pi)
-            # entropy = dist.entropy()
-            # entropy_bonus = -0.2 * entropy.mean()
-            # loss -= entropy_bonus
-            
-            self.optimizer.zero_grad()
-            loss.mean().backward()
-            
-            """
-            We also used a gradient clipping. If we don't want, just ignore it.
-            """
-            nn.utils.clip_grad_norm_(self.parameters(), max_norm=1.0)
-            #----------------------------------------------------------------#
-
-            self.optimizer.step()
-
-
-class ContinousPPO(nn.Module):
-    def __init__(self, AC_state_dim=3, AC_hidden_dim=64, AC_action_dim=5, learning_rate=1e-4,
-                 K_epoch=4, gamma=0.98, lmbda=0.95, eps_clip=0.1,
-                 device=False):
-        super(ContinousPPO, self).__init__()
-        self.data = []
-        
-        self.AC_state_dim = AC_state_dim
-        self.CAC = ContinousActorCritic(state_dim=AC_state_dim, hidden_dim=AC_hidden_dim, action_dim=AC_action_dim)
         if device:
-            self.CAC = self.CAC.to(device)
-        self.optimizer = optim.Adam(self.parameters(), lr=learning_rate)
+            self.AC = self.AC.to(device)
+            
+        self.K_epochs  = K_epochs
+        self.gamma     = gamma
+        self.lmbda     = lmbda
+        self.eps_clip  = eps_clip
+        self.dist_std  = std
+        self.optimizer = optim.AdamW(self.parameters(), lr=learning_rate)
+        self.MSEloss   = nn.MSELoss()
         
-        self.K_epoch  = K_epoch
-        self.gamma    = gamma
-        self.lmbda    = lmbda
-        self.eps_clip = eps_clip
-        self.MSEloss  = nn.MSELoss()
+        self.data = []
         
-        self.device = device
-
-    def get_pi(self, x):
-        """
-        Return:
-            mu_and_binary_probs[:2] >> Only the first two elements are mus and the others will be used for binary switches.
-        """
-        
-        mu_and_binary_probs, sigmas, _ = self.CAC(x)
-        if x.shape[0] != self.AC_state_dim:
-            mus = mu_and_binary_probs[:, :2]
-            binary_probs = mu_and_binary_probs[:, 2:]
-        else:
-            mus = mu_and_binary_probs[:2]
-            binary_probs = mu_and_binary_probs[2:]
-        
-        #FIXME: When training, `mus` go to extreme values (e.g., -1 or 1)
-        return torch.distributions.Normal(mus, sigmas), binary_probs
-    
     def get_v(self, x):
-        _, _, v = self.CAC(x)
+        _, v = self.AC(x)
         return v
     
     def put_data(self, transition):
@@ -455,7 +416,7 @@ class ContinousPPO(nn.Module):
             prob_a_lst.append([prob_a])
             done_mask = 0 if done else 1
             done_lst.append([done_mask])
-
+        
         s = torch.stack(s_lst, dim=0)
         a = torch.stack(a_lst, dim=0)
         r = torch.tensor(r_lst)
@@ -467,9 +428,22 @@ class ContinousPPO(nn.Module):
         return s, a, r, s_prime, done_mask, prob_a
 
     def train_net(self):
-        s, a, r, s_prime, done_mask, prob_a = self.make_batch()
+        """
+        Generalized advantage estimator
+            A_t^{GAE(gamma, lambda)}
+                = \sum_{l=0}^{INF} { (gamma*lmbda)^l * delta_(t+l)^V }
+            delta >>> GAE(gamma, 0): A_t = r_t + gamma*V(s_(t+1)) - V(s_t)
+        
+        Probability ratio (called ratio)
+            r_t(theta) = policy(a|s) / policy_old(a|s)
 
-        for i in range(self.K_epoch):
+        Surrogate objective function
+            L_CLIP = E [min(ratio*advantage , CLIP(ratio, 1-eps, 1+eps) ]
+            L = L_CLIP - L_VF (+ Entropy_bonus)
+        """
+        s, a, r, s_prime, done_mask, log_prob_a = self.make_batch()
+
+        for i in range(self.K_epochs):
             td_target = r.to(self.device) + self.gamma * self.get_v(s_prime.to(device)) * done_mask.to(self.device)
             delta = td_target - self.get_v(s.to(self.device))
             delta = delta.cpu().detach().numpy()
@@ -480,175 +454,114 @@ class ContinousPPO(nn.Module):
                 advantage = self.gamma * self.lmbda * advantage + delta_t[0]
                 advantage_lst.append([advantage])
             advantage_lst.reverse()
-            advantage = torch.tensor(advantage_lst, dtype=torch.float)
+            advantage = torch.tensor(advantage_lst, dtype=torch.float) # torch tensor shape >>> [T_horizon, 1]
 
-            dist = self.get_pi(s.to(self.device))[0]
-            log_probs = dist.log_prob(a[:,:2].to(self.device)).unsqueeze(-1)
-            log_prob = log_probs[:,0] + log_probs[:,1] #NOTE: p(a1,a2) = p(a1)*p(a2) >> log(p(a1,a2)) = log(p(a1)) + log(p(a2))
-            
-            #FIXME: Please check prob_a. Is it probability or log_probability?
-            ratio = torch.exp(log_prob.to(self.device) - torch.log(prob_a.to(self.device)))  # a/b == exp(log(a)-log(b))
+            log_probs = self.AC.sample_log_prob(s.to(device), a.to(device))
+            ratio = torch.exp(log_probs-log_prob_a.to(device))
 
             surr1 = ratio * advantage.to(self.device)
             surr2 = torch.clamp(ratio, 1-self.eps_clip, 1+self.eps_clip) * advantage.to(self.device)
-            loss  = -torch.min(surr1, surr2) + self.MSEloss(td_target.detach(), self.get_v(s.to(self.device)))
-
+            
+            #NOTE: maximize L_CLIP and minimize L_VF
+            loss = -torch.min(surr1, surr2) + self.MSEloss(td_target.detach(), self.get_v(s.to(self.device)))
+            
             self.optimizer.zero_grad()
             loss.mean().backward()
             self.optimizer.step()
 
 
-def get_reward(current_state, HRR_model=None):
+def get_state(robot_state, hrnet, move_distance=305, arm_distance=120):
     """
     Args:
-        If current_state.shape[0] is 3, then it is [productivity, valence, arousal]. Otherwise, it is a 5 dim robot state. 
+        move_distance unit : cm
+        arm_distance  unit : cm >>> 2*60
     """
-    if current_state.shape[0] == 3:
-        productivity, valence, arousal = current_state[0], current_state[1], current_state[2]
+    move_speed, arm_swing_speed, proximity, level_of_autonomy, leader_of_collaboration = robot_state[0], robot_state[1], robot_state[2], robot_state[3], robot_state[4]
 
-        theoretical_max_productivity = 271
-        
-        distance = abs(current_state[0]-theoretical_max_productivity)
-        reward = theoretical_max_productivity - distance
+    travel_time   = 2*(arm_distance/arm_swing_speed + move_distance/move_speed)
 
-        if current_state[0] > theoretical_max_productivity:
-            reward -= distance
-        
-        if current_state[1] < 0 or current_state[2] < 0:
-            reward -= 100
+    if proximity > 0:
+        travel_time += 2
+    if level_of_autonomy > 0:
+        travel_time += 3
+    if leader_of_collaboration > 0:
+        travel_time += 5
 
-    elif current_state.shape[0] == 5:
-        move_speed, arm_swing_speed, proximity, level_of_autonomy, leader_of_collaboration = current_state[0], current_state[1], current_state[2], current_state[3], current_state[4]
+    travel_time /= 60               # unit: min
+    productivity = 60 / travel_time # unit: bricks per hour
 
-        max_productivity = 271
-        move_distance = 305  # unit: cm
-        arm_distance  = 2*60 # unit: cm
-        travel_time   = 2*(arm_distance/arm_swing_speed + move_distance/move_speed)
-
-        if proximity > 0:
-            travel_time += 2
-        if level_of_autonomy > 0:
-            travel_time += 3
-        if leader_of_collaboration > 0:
-            travel_time += 5
-    
-        travel_time /= 60               # unit: min
-        productivity = 60 / travel_time # unit: bricks per hour
-
-        valence, arousal = HRR_model(current_state)
-
-        reward = -abs(max_productivity-productivity)
-        # reward = productivity + (valence + arousal)*50
-        # if valence < 0 or arousal < 0 or productivity > 272:
-        #     reward -= 10000
-        
-        move_speed_boundary = (27.8, 143.8)
-        arm_speed_boundary  = (23.8, 109.1)
-        
-        if move_speed < move_speed_boundary[0] or move_speed > move_speed_boundary[1] or arm_swing_speed < arm_speed_boundary[0] or arm_swing_speed > arm_speed_boundary[1]:
-            reward -= 10000
-    
-    return reward, productivity, valence, arousal
+    valence, arousal = hrnet(robot_state)
+    return torch.tensor([productivity, valence, arousal])
             
 
-class HRCENV:
-    def __init__(self, continous_action=False, hr_net=None, delta_speed=2.0, productivity_threshold=250.0, init_choice=torch.tensor([1, 1, 1])):
+def get_reward(current_state, penalty_standard=(271, 0, 0), penalty=200):
+    """
+    Args:
+        current_state is [productivity, valence, arousal] 
+        penalty_standard is a standard for (productivity, valence, arousal)
+    """
+    theoretical_max_productivity, standard_valence, standard_arousal = penalty_standard
 
-        self.state_dim  = 5   # robot state 5 dim tensor
-        self.action_dim = 72  # action (increase/decrease/maintain, increase/decrease/maintain, on/off, on/off, on/off)
+    distance = abs(current_state[0]-theoretical_max_productivity)
+    reward = theoretical_max_productivity - distance
+
+    if current_state[0] > theoretical_max_productivity:
+        # reward -= distance
+        reward -= penalty
+    
+    if current_state[1] < standard_valence or current_state[2] < standard_arousal:
+        reward -= penalty
+    
+    #TODO: Add cognitive value associated term.
+    return reward
+
+
+class HRCENV:
+    def __init__(self, hr_net=None,
+                 move_distance=305, arm_distance=120,
+                 penalty_standard=(271, 0, 0), penalty=200):
         self.hr_net = hr_net
-        self.delta_speed= delta_speed
-        self.productivity_threshold = productivity_threshold
+        self.move_distance = move_distance
+        self.arm_distance  = arm_distance
+        self.penalty_standard = penalty_standard
+        self.penalty = penalty
 
         self.move_speed_boundary = (27.8, 143.8)
         self.arm_speed_boundary  = (23.8, 109.1)
         self.choice_values       = torch.tensor([-1, 1])
-        self.max_sample_aciton   = 2
-
-        self.init_move_speed = (self.move_speed_boundary[0] + self.move_speed_boundary[1])/2
-        self.init_arm_speed  = (self.arm_speed_boundary[0] + self.arm_speed_boundary[1])/2
-        self.init_choice = init_choice # binary mask
         
-        """
-        FIXME:
-            Should the initial state be fixed or set randomly?
-            # move_speed = torch.FloatTensor(1).uniform_(self.move_speed_boundary[0], self.move_speed_boundary[1])
-            # arm_speed  = torch.FloatTensor(1).uniform_(self.arm_speed_boundary[0], self.arm_speed_boundary[1])
-            # random_choices = self.choice_values[torch.randint(0, 2, (3,))]
-            # self.state = torch.cat((move_speed, arm_speed, random_choices), 0) # random state as init state >>> torch.size([5])
-        """
-
-        self.state = torch.tensor([self.init_move_speed, self.init_arm_speed, self.init_choice[0], self.init_choice[1], self.init_choice[2]])
-        self.action_effects = self._define_action_effects()
+        move_speed = torch.FloatTensor(1).uniform_(self.move_speed_boundary[0], self.move_speed_boundary[1])
+        arm_speed  = torch.FloatTensor(1).uniform_(self.arm_speed_boundary[0], self.arm_speed_boundary[1])
+        random_choices = self.choice_values[torch.randint(0, 2, (3,))]
+        robot_state = torch.cat((move_speed, arm_speed, random_choices), 0) # random robot_state
+        self.state = get_state(robot_state.to(device), self.hr_net, move_distance, arm_distance)
         
-        self.continous_action = continous_action
-        if continous_action:
-            self.state_dim  = 3 # [productivity, valence, arousal] state 3 dim tensor
-            self.action_dim = 5
-            _, productivity, valence, arousal = get_reward(self.state.to(device), self.hr_net)
-            self.state = torch.tensor([productivity, valence, arousal])
-
     def reset(self):
-        """
-        FIXME:
-            Should the initial state be fixed or set randomly?
-            # move_speed = torch.FloatTensor(1).uniform_(self.move_speed_boundary[0], self.move_speed_boundary[1])
-            # arm_speed  = torch.FloatTensor(1).uniform_(self.arm_speed_boundary[0], self.arm_speed_boundary[1])
-            # random_choices = self.choice_values[torch.randint(0, 2, (3,))]
-            # self.state = torch.cat((move_speed, arm_speed, random_choices), 0) # random state as init state >>> torch.size([5])
-        """
-        self.state = torch.tensor([self.init_move_speed, self.init_arm_speed, self.init_choice[0], self.init_choice[0], self.init_choice[0]])
-        if self.continous_action:
-            _, productivity, valence, arousal = get_reward(self.state.to(device), self.hr_net)
-            self.state = torch.tensor([productivity, valence, arousal])
+        move_speed = torch.FloatTensor(1).uniform_(self.move_speed_boundary[0], self.move_speed_boundary[1])
+        arm_speed  = torch.FloatTensor(1).uniform_(self.arm_speed_boundary[0], self.arm_speed_boundary[1])
+        random_choices = self.choice_values[torch.randint(0, 2, (3,))]
+        robot_state = torch.cat((move_speed, arm_speed, random_choices), 0) # random robot_state
+        self.state = get_state(robot_state.to(device), self.hr_net, self.move_distance, self.arm_distance)
         return self.state
 
-    def step(self, action_index=None, normalized_probs=None, binary_probs=None):
+    def step(self, action, terminate_condition=(271, 30, 0 ,0)):
+        """
+        Args:
+            terminate_condition: (target productivity, epsilon for productivity, target_valence, target_arousal)
+        """
         done = False
-
-        if action_index is not None:
-            action = self.action_effects[action_index]
-            self.state[0] += action[0]
-            self.state[1] += action[1]
-            for i in range(2, 5):
-                self.state[i] = action[i] 
-            reward, productivity, valence, arousal = get_reward(self.state.to(device), self.hr_net)
-
-            #FIXME: Condition to terminate the episode. How can we terminate the episode?
-            # done = torch.rand(1).item() < 0.1  # e.g., randomly terminate with 10% prob
-            
-            if productivity > self.productivity_threshold and valence > 0 and arousal > 0:
-                done = True
+        self.state = get_state(action, self.hr_net, self.move_distance, self.arm_distance)
+        reward = get_reward(self.state, self.penalty_standard, self.penalty)
         
-        else: # When we use normalized_probs and binary_probs!
-            move_speed   = (normalized_probs[0] - (-self.max_sample_aciton))*(self.move_speed_boundary[1]-self.move_speed_boundary[0])/(self.max_sample_aciton*2)
-            arm_speed    = (normalized_probs[1] - (-self.max_sample_aciton))*(self.arm_speed_boundary[1]-self.arm_speed_boundary[0])/(self.max_sample_aciton*2)
-            binary_probs = torch.where(binary_probs < 0, torch.tensor(-1.0).to(device), torch.tensor(1.0).to(device))
-            robot_state  = torch.cat((move_speed.repeat(1).to(device), arm_speed.repeat(1).to(device), binary_probs.to(device)), dim=0)
-            action = robot_state
-
-            _, productivity, valence, arousal = get_reward(robot_state, self.hr_net)
-            self.state = torch.cat((productivity.repeat(1), valence.repeat(1), arousal.repeat(1)), dim=0)
-            reward, _, _, _ = get_reward (self.state, self.hr_net)
+        #TODO: Check a terminate_condition
+        if self.state[0] <= terminate_condition[0] \
+            and terminate_condition[0]-self.state[0] <= terminate_condition[1] \
+            and self.state[1] > terminate_condition[2] \
+            and self.state[2] > terminate_condition[3]:
+            done = True
             
-            if productivity > self.productivity_threshold and valence > 0 and arousal > 0:
-                done = True
-                
-        return self.state, reward, done, action
-
-    def _define_action_effects(self):
-        """
-        If discrete, return 72 action combinations.
-        """
-        actions = []
-        for speed_change in [-self.delta_speed, 0, self.delta_speed]:
-            for arm_speed_change in [-self.delta_speed, 0, self.delta_speed]:
-                for state_3 in [self.choice_values[0], self.choice_values[1]]:
-                    for state_4 in [-self.choice_values[0], self.choice_values[1]]:
-                        for state_5 in [-self.choice_values[0], self.choice_values[1]]:
-                            action = torch.tensor([speed_change, arm_speed_change, state_3, state_4, state_5], dtype=torch.float)
-                            actions.append(action)
-        return actions
-
-    def render(self):
-        pass
+        ## Valence and Arousal only
+        # if self.state[1] > terminate_condition[2] and self.state[2] > terminate_condition[3]:
+        #     done = True
+            
+        return self.state, reward, done
