@@ -60,7 +60,7 @@ def show_masks_on_image(raw_image, masks, scores, input_points):
 
     for point in input_points:
         x, y = point
-        ax.plot(x, y, 'o', color='white', markersize=8)
+        # ax.plot(x, y, 'o', color='white', markersize=8)
         # ax.text(x + 5, y, f'({x}, {y})', color='white', fontsize=10, backgroundcolor='black')
 
     ax.axis('off')
@@ -103,5 +103,36 @@ def save_masked_image(image, mask, output_directory, image_name, mask_number):
 
     output_file_path = os.path.join(output_path, f"{str(mask_number)}.png")
     masked_image_pil.save(output_file_path)
+
+def save_bbox_masked_image(image, mask, output_directory, image_name, mask_number):
+    coords = np.argwhere(mask)
+    y_coords, x_coords = coords[:, 1], coords[:, 2]
     
+    y_min, x_min = y_coords.min(axis=0), x_coords.min(axis=0)
+    y_max, x_max = y_coords.max(axis=0), x_coords.max(axis=0)
+    
+    image_np = np.array(image)
+    cropped_image = image_np[y_min:y_max+1, x_min:x_max+1]
+    cropped_mask = mask[0, y_min:y_max+1, x_min:x_max+1]
+    canvas = np.ones_like(image_np) * 255
+    
+    canvas_center_y, canvas_center_x = canvas.shape[0] // 2, canvas.shape[1] // 2
+    cropped_center_y, cropped_center_x = cropped_image.shape[0] // 2, cropped_image.shape[1] // 2
+
+    start_y = canvas_center_y - cropped_center_y
+    start_x = canvas_center_x - cropped_center_x
+
+    end_y = start_y + cropped_image.shape[0]
+    end_x = start_x + cropped_image.shape[1]
+
+    cropped_mask_expanded = np.repeat(cropped_mask[:, :, np.newaxis], 3, axis=2)
+    canvas[start_y:end_y, start_x:end_x][cropped_mask_expanded] = cropped_image[cropped_mask_expanded]
+
+    masked_image_pil = Image.fromarray(canvas.astype(np.uint8))
+    image_basename = os.path.splitext(image_name)[0]
+    output_path = os.path.join(output_directory, image_basename)
+    os.makedirs(output_path, exist_ok=True)
+    output_file_path = os.path.join(output_path, f"{str(mask_number)}.png")
+    masked_image_pil.save(output_file_path)
+
 # extract_image_grid_points(1920, 899)
