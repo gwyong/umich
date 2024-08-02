@@ -2,6 +2,7 @@ import os, glob
 import torch
 import torch.nn as nn
 
+from tqdm import tqdm
 from transformers import SamModel, SamProcessor
 
 import utils
@@ -68,7 +69,8 @@ class SAM(nn.Module):
             output_folder_path = os.path.join(output_dir, image_basename)
             os.makedirs(output_folder_path, exist_ok=True)
             for i, mask in enumerate(unique_masks):
-                utils.save_masked_image(image, mask.detach().numpy(), output_dir, image_basename, i)
+                # utils.save_masked_image(image, mask.detach().numpy(), output_dir, image_basename, i)
+                utils.save_bbox_masked_image(image, mask.detach().numpy(), output_dir, image_basename, i)
 
         unique_masks = torch.stack(unique_masks, dim=1).cpu().permute(1, 0, 2, 3)
         unique_scores = torch.stack(unique_scores, dim=1).cpu().unsqueeze(2)
@@ -77,5 +79,18 @@ class SAM(nn.Module):
             utils.show_masks_on_image(image, unique_masks, unique_scores, input_points[0])
         
         return unique_masks, unique_scores
+
+def sam_save_masks_from_images(image_paths, num_input_points=9, multimask_output=False,
+                               pred_threshold=0.7, iou_threshold=0.95, output_dir="./outputs"):
+    model_sam = SAM(device=device)
+    for image_path in tqdm(image_paths, desc="Saving masks..."):
+        image = utils.read_image_path(image_path)
+        input_points = model_sam.prepare_input_points(image_path, num_input_points=num_input_points)
+        inputs, outputs = model_sam.segment(image, input_points=input_points, multimask_output=multimask_output)
+        unique_masks, unique_scores = model_sam.postprocess(inputs=inputs, outputs=outputs,
+                                                            pred_threshold=pred_threshold, iou_threshold=iou_threshold,
+                                                            show=False, save=True,
+                                                            output_dir=output_dir, input_image_path=image_path)
+    return
     
     
