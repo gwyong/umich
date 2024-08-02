@@ -29,12 +29,15 @@ class CLIP(nn.Module):
             image_embeddings = self.model.get_image_features(images)
         return image_embeddings
     
-    def compute_cosine_sim(self, text, images, text_embeddings, image_embeddings):
-        text_embeddings = F.normalize(text_embeddings, p=2, dim=-1)
+    def compute_cosine_sim(self, text, images, query_embeddings, image_embeddings, query_type="text"):
+        query_embeddings = F.normalize(query_embeddings, p=2, dim=-1)
         image_embeddings = F.normalize(image_embeddings, p=2, dim=-1)
 
-        cosine_sim = torch.matmul(text_embeddings, image_embeddings.T)
+        cosine_sim = torch.matmul(query_embeddings, image_embeddings.T)
         max_sim_indices = torch.argmax(cosine_sim, dim=-1)
         for i, idx in enumerate(max_sim_indices):
-            print(f"Text feature '{text[i]}' is most similar to image: {images[idx]}")
+            if query_type == "text":
+                print(f"Text feature '{text[i]}' is most similar to image: {images[idx]}")
+            else:
+                print(f"The most similar mask to query: {images[idx]}")
         return cosine_sim
