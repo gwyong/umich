@@ -22,10 +22,10 @@ sam_model = SamModel.from_pretrained("facebook/sam-vit-huge").to(device)
 sam_processor = SamProcessor.from_pretrained("facebook/sam-vit-huge")
 
 # img_path = "./data/008_BRIDGE_perspective.png"
-img_path = "./data/388_HUNTC_perspective1.jpg"
+img_path = "./data/059_MAPLE_streetview_N.png"
 image = Image.open(img_path).convert("RGB")
 
-text = "single building."
+text = "elevator."
 # input_points = [[[450, 600]]]  # 2D location of a window in the image
 
 inputs = dino_processor(images=image, text=preprocess_caption(text), return_tensors="pt").to(device)
@@ -99,5 +99,5 @@ def show_masks_on_image(raw_image, masks, scores):
     ax.axis('off')  # 축 숨김
     plt.show()
 
-print("MASK SHAPE", masks[0].shape, scores.shape)
+# print("MASK SHAPE", masks[0].shape, scores.shape)
 show_masks_on_image(image, masks[0], scores)
