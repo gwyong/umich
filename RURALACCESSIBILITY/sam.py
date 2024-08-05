@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 
 from tqdm import tqdm
-from transformers import SamModel, SamProcessor
+from transformers import SamModel, SamProcessor, GroundingDinoForObjectDetection, GroundingDinoProcessor
 
 import utils
 
@@ -16,6 +16,11 @@ class SAM(nn.Module):
         self.model = SamModel.from_pretrained(model_id).to(device)
         self.processor = SamProcessor.from_pretrained(model_id)
     
+    def prepare_dino(self, model_id="IDEA-Research/grounding-dino-base"):
+        self.dino_processor = GroundingDinoProcessor.from_pretrained(model_id)
+        self.dino_model = GroundingDinoForObjectDetection.from_pretrained(model_id).to(device)
+        return
+    
     def prepare_input_points(self, input_image_path, num_input_points=128):
         self.num_input_points = num_input_points
         image = utils.read_image_path(input_image_path)
@@ -23,7 +28,20 @@ class SAM(nn.Module):
         # NOTE: Treat each point as an input point.
         input_points = [utils.wrap_points(point_group) for point_group in input_points]
         return input_points
+    
+    def prepare_dino_boxes(self, image, accessibility_text, dino_threshold=0.3):
+        inputs = self.dino_processor(images=image, text=utils.preprocess_caption(accessibility_text), return_tensors="pt").to(device)
+        with torch.no_grad():
+            outputs = self.dino_model(**inputs)
 
+        width, height = image.size
+        postprocessed_outputs = self.dino_processor.image_processor.post_process_object_detection(outputs,
+                                                                        target_sizes=[(height, width)],
+                                                                        threshold=dino_threshold)
+        results = postprocessed_outputs[0]
+        bboxes = results['boxes'].tolist()
+        return bboxes
+    
     def segment(self, image, input_points=None, input_labels=None, input_boxes=None, multimask_output=False):
         """
         Segment a single input image with input_prompts
@@ -45,6 +63,20 @@ class SAM(nn.Module):
         with torch.no_grad():
             outputs = self.model(**inputs, multimask_output=multimask_output)
         return inputs, outputs
+    
+    def extract_dino_masks(self, inputs, outputs):
+        masks = self.processor.image_processor.post_process_masks(
+                outputs.pred_masks.cpu(),
+                inputs["original_sizes"].cpu(),
+                inputs["reshaped_input_sizes"].cpu())
+        dino_masks, dino_scores = [], []
+        for i in range(masks[0].shape[0]):
+            dino_masks.append(masks[0][i])
+            dino_scores.append(outputs.iou_scores[0][i])
+        dino_masks = torch.stack(dino_masks, dim=1).cpu().permute(1, 0, 2, 3)
+        dino_scores = torch.stack(dino_scores, dim=1).cpu().unsqueeze(2)
+        
+        return dino_masks, dino_scores
     
     def postprocess(self, inputs, outputs, pred_threshold=0.7, iou_threshold=0.95,
                     show=False, save=True, output_dir="./output", input_image_path=None):
@@ -92,5 +124,4 @@ def sam_save_masks_from_images(image_paths, num_input_points=9, multimask_output
                                                             show=False, save=True,
                                                             output_dir=output_dir, input_image_path=image_path)
     return
-    
     

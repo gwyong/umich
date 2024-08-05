@@ -1,9 +1,10 @@
 import os
+import json
 import math
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from PIL import Image
+from PIL import Image, ImageDraw
 from matplotlib.colors import ListedColormap
 
 def read_image_path(path):
@@ -69,8 +70,17 @@ def show_masks_on_image(raw_image, masks, scores, input_points):
 def calculate_iou(mask1, mask2):
     intersection = torch.logical_and(mask1, mask2)
     union = torch.logical_or(mask1, mask2)
+    if torch.sum(union).float() == 0:
+        return 0.0
     iou_score = torch.sum(intersection).float() / torch.sum(union).float()
     return iou_score.item()
+
+def calculate_dice(mask1, mask2):
+    intersection = torch.logical_and(mask1, mask2).sum().item()
+    sum_masks = mask1.sum().item() + mask2.sum().item()
+    if sum_masks == 0:
+        return 0.0
+    return 2 * intersection / sum_masks
 
 def remove_duplicate_masks(masks, iou_scores, threshold=0.95):
     unique_masks = []
@@ -134,5 +144,35 @@ def save_bbox_masked_image(image, mask, output_directory, image_name, mask_numbe
     os.makedirs(output_path, exist_ok=True)
     output_file_path = os.path.join(output_path, f"{str(mask_number)}.png")
     masked_image_pil.save(output_file_path)
+
+def check_word_in_text(word, text):
+    if word.lower() in text.lower():
+        return True
+    return False
+
+def json_to_masks(json_path):
+    with open(json_path, 'r') as file:
+        annotation = json.load(file)
+    
+    mask_dict = {}
+    for shape in annotation['shapes']:
+        if shape["shape_type"] != "polygon":
+            continue
+        label = shape['label']
+        points = [(int(point[0]), int(point[1])) for point in shape['points']]
+        
+        mask = Image.new('L', (annotation['imageHeight'], annotation['imageWidth']), 0)
+        ImageDraw.Draw(mask).polygon(points, outline=1, fill=1)
+        mask = np.array(mask)
+
+        if label not in mask_dict:
+            mask_dict[label] = []
+        mask_dict[label].append(mask)
+
+    for label, masks in mask_dict.items():
+        masks_array = np.stack(masks).reshape(len(masks), 1, annotation['imageHeight'], annotation['imageWidth'])
+        mask_dict[label] = masks_array
+
+    return annotation['imagePath'], mask_dict
 
 # extract_image_grid_points(1920, 899)
