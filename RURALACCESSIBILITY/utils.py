@@ -4,7 +4,7 @@ import math
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 from matplotlib.colors import ListedColormap
 
 def read_image_path(path):
@@ -102,6 +102,8 @@ def save_masked_image(image, mask, output_directory, image_name, mask_number):
     
     if mask.ndim == 3 and mask.shape[0] == 1:
         mask = mask.squeeze(0)
+    if mask.ndim == 4 and mask.shape[0] == 1 and mask.shape[1] == 1:
+        mask = mask.squeeze(0).squeeze(0)
 
     masked_image = np.where(mask[..., None] == 1, image_np, white_background)
 
@@ -159,11 +161,11 @@ def json_to_masks(json_path):
         if shape["shape_type"] != "polygon":
             continue
         label = shape['label']
-        points = [(int(point[0]), int(point[1])) for point in shape['points']]
+        points = [(int(point[1]), int(point[0])) for point in shape['points']]
         
         mask = Image.new('L', (annotation['imageHeight'], annotation['imageWidth']), 0)
         ImageDraw.Draw(mask).polygon(points, outline=1, fill=1)
-        mask = np.array(mask)
+        mask = np.array(mask).transpose(1, 0)
 
         if label not in mask_dict:
             mask_dict[label] = []
@@ -172,7 +174,32 @@ def json_to_masks(json_path):
     for label, masks in mask_dict.items():
         masks_array = np.stack(masks).reshape(len(masks), 1, annotation['imageHeight'], annotation['imageWidth'])
         mask_dict[label] = masks_array
-
+        
     return annotation['imagePath'], mask_dict
+
+def apply_mask(image, mask, color, alpha=0.5):
+    image = image.convert("RGBA")
+    mask = mask.convert("L")
+    assert image.size == mask.size
+
+    mask_data = np.array(mask)*255
+    rgba_mask = np.zeros((*mask_data.shape, 4), dtype=np.uint8)
+    
+    rgba_mask[..., :3] = color
+    rgba_mask[..., 3] = mask_data * alpha
+    
+    mask_image = Image.fromarray(rgba_mask)
+    image = Image.alpha_composite(image, mask_image)
+    return image
+
+def add_label(image, label, position, color=(255, 255, 255), font_size=20):
+    draw = ImageDraw.Draw(image)
+    # font = ImageFont.load_default()
+    font = ImageFont.truetype("arial.ttf", font_size)
+    draw.text(position, label, fill=color, font=font)
+    return image
+
+def apply_mask_to_image(image, gt_mask, pred_mask, gt_color=(0, 255, 0), pred_color=(255, 255, 0), alpha=0.5):
+    pass
 
 # extract_image_grid_points(1920, 899)

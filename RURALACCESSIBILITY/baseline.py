@@ -2,7 +2,7 @@ import time, os, glob, sys, pickle
 import torch
 from tqdm import tqdm
 
-import utils, sam, clip
+import utils, sam, clip, eval
 
 # os.environ["CUDA_VISIBLE_DEVICES"]="0"
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -49,52 +49,7 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 # with open(sam_output_path, 'wb') as f:
 #     pickle.dump(sam_output, f)
 
-def eval_baseline(sam_output_path, test_folder_path):
-    with open(sam_output_path, 'rb') as f:
-        preds = pickle.load(f)
-    
-    iou_dict = {}
-    dice_dict = {}
-    for file_name in tqdm(os.listdir(test_folder_path), desc="Evaluating..."):
-        if file_name.endswith('.JSON') or file_name.endswith('.json'):
-            image_path, gt_mask_dict = utils.json_to_masks(os.path.join(test_folder_path, file_name))
-            for label, gt_masks in gt_mask_dict.items():
-                if label not in iou_dict:
-                    iou_dict[label] = []
-                    dice_dict[label] = []
-
-                if label in preds[image_path]:
-                    pred_masks, pred_scores = preds[image_path][label]
-                    
-                    combined_gt_mask = torch.max(torch.from_numpy(gt_masks), dim=0, keepdim=True)[0]
-                    combined_pred_mask = torch.max(pred_masks, dim=0, keepdim=True)[0]
-                    iou = utils.calculate_iou(combined_gt_mask, combined_pred_mask)
-                    iou_dict[label].append(iou)
-                    dice = utils.calculate_dice(combined_gt_mask, combined_pred_mask)
-                    dice_dict[label].append(dice)
-
-    avg_ious, count = 0, 0
-    for label, ious in iou_dict.items():
-        if len(ious) == 0:
-            print(f"{label}: NO IOUs")
-            continue
-        print(f"{label}: {sum(ious)/len(ious)}")
-        avg_ious += sum(ious)/len(ious)
-        count += 1
-    print(f"Average IOU: {avg_ious/count}")
-    
-    avg_dices, count = 0, 0
-    for label, dices in dice_dict.items():
-        if len(dices) == 0:
-            print(f"{label}: NO DICEs")
-            continue
-        print(f"{label}: {sum(dices)/len(dices)}")
-        avg_dices += sum(dices)/len(dices)
-        count += 1
-    print(f"Average DICE: {avg_dices/count}")
-    return
-
 if __name__ == "__main__":
     sam_output_path = "./outputs/sam_output.pickle"
     test_folder_path = "../../RollingsAccessibility/test_images"
-    eval_baseline(sam_output_path, test_folder_path)
+    eval.eval_baseline(sam_output_path, test_folder_path)
