@@ -54,22 +54,6 @@ def eval_baseline(sam_output_path, test_folder_path, visualize=False, visualize_
                             pred_all_masks.append(pred_masks)
                             pred_flag += 1
 
-                            # gt_all_masks = torch.cat(gt_all_masks, dim=0)
-                            # pred_all_masks = torch.cat(pred_all_masks, dim=0)
-                            # combined_gt_all = torch.any(gt_all_masks, dim=0, keepdim=True)[0]
-                            # combined_pred_all = torch.any(gt_all_masks, dim=0, keepdim=True)[0]
-                            # pil_gt_mask = torchvision.transforms.functional.to_pil_image(combined_gt_all)
-                            # pil_pred_mask = torchvision.transforms.functional.to_pil_image(combined_pred_all.to(dtype=torch.uint8))
-                            # image = utils.apply_mask(image, pil_gt_mask, color=(0, 255, 0))
-                            # image = utils.apply_mask(image, pil_pred_mask, color=(0, 0, 255))
-                            # for gt_position, pred_position in zip(gt_label_positions, pred_label_positions):
-                            #     label, gt_position = gt_position
-                            #     label, pred_position = pred_position
-                            #     image = utils.add_label(image, label, position=gt_position, color=(0, 255, 0), font_size=30)
-                            #     image = utils.add_label(image, label, position=pred_position, color=(0, 0, 255), font_size=30)
-
-                            # total_mask_path = os.path.join(visualize_output_path, os.path.splitext(os.path.basename(image_path))[0], "total.png")
-                            # image.save(total_mask_path)
                     else:
                         iou_dict[label].append(0)
                         dice_dict[label].append(0)
@@ -81,16 +65,6 @@ def eval_baseline(sam_output_path, test_folder_path, visualize=False, visualize_
                             gt_left_top = (gt_indices[1][0].item(), gt_indices[0][0].item())
                             gt_label_positions.append((label, gt_left_top))
                             gt_all_masks.append(torch.from_numpy(gt_mask_dict[label]))
-                            
-                            # gt_all_masks = torch.cat(gt_all_masks, dim=0)
-                            # combined_gt_all = torch.any(gt_all_masks, dim=0, keepdim=True)[0]
-                            # pil_gt_mask = torchvision.transforms.functional.to_pil_image(combined_gt_all)
-                            # image = utils.apply_mask(image, pil_gt_mask, color=(0, 255, 0))
-                            # for gt_position in gt_label_positions:
-                            #     label, gt_position = gt_position
-                            #     image = utils.add_label(image, label, position=gt_position, color=(0, 255, 0), font_size=30)
-                            # total_mask_path = os.path.join(visualize_output_path, os.path.splitext(os.path.basename(image_path))[0], "total.png")
-                            # image.save(total_mask_path)
 
             else: # To check all accessibility features for street-view images
                 for label, gt_masks in gt_mask_dict.items():
