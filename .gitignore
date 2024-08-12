@@ -1,3 +1,5 @@
 # Ignore large pickle file
 RURALACCESSIBILITY/outputs/sam_output.pickle
 RURALACCESSIBILITY/outputs
+RURALACCESSIBILITY/playground.py
+RURALACCESSIBILITY/playground.ipynb

@@ -14,6 +14,7 @@ def eval_baseline(sam_output_path, test_folder_path, visualize=False, visualize_
     
     iou_dict = {}
     dice_dict = {}
+    image_level_accuracy = {} # include (# of ground-truth, # of prediction)
     for file_name in tqdm(os.listdir(test_folder_path), desc="Evaluating..."):
         if file_name.endswith('.JSON') or file_name.endswith('.json'):
             image_path, gt_mask_dict = utils.json_to_masks(os.path.join(test_folder_path, file_name)) # image.shape (np.array): (H, W, C)
@@ -30,7 +31,8 @@ def eval_baseline(sam_output_path, test_folder_path, visualize=False, visualize_
                 label = "parking_lot"
                 if label in gt_mask_dict.keys():
                     if label not in iou_dict:
-                        iou_dict[label], dice_dict[label] = [], []
+                        iou_dict[label], dice_dict[label], image_level_accuracy[label] = [], [], {"gt": 0, "pred": 0}
+                    image_level_accuracy[label]["gt"] += 1
                     if label in preds[image_path]:
                         pred_masks, pred_scores = preds[image_path][label]
                         combined_gt_mask = torch.any(torch.from_numpy(gt_mask_dict[label]), dim=0, keepdim=True)[0]
@@ -40,6 +42,7 @@ def eval_baseline(sam_output_path, test_folder_path, visualize=False, visualize_
                         iou_dict[label].append(iou)
                         dice = utils.calculate_dice(combined_gt_mask, combined_pred_mask)
                         dice_dict[label].append(dice)
+                        image_level_accuracy[label]["pred"] += 1
 
                         if visualize:
                             utils.save_masked_image(utils.read_image_path(os.path.join(test_folder_path,image_path)), combined_gt_mask, visualize_output_path, os.path.splitext(os.path.basename(image_path))[0], "_".join(("gt", label)))
@@ -69,7 +72,7 @@ def eval_baseline(sam_output_path, test_folder_path, visualize=False, visualize_
             else: # To check all accessibility features for street-view images
                 for label, gt_masks in gt_mask_dict.items():
                     if label not in iou_dict:
-                        iou_dict[label], dice_dict[label] = [], []
+                        iou_dict[label], dice_dict[label], image_level_accuracy[label] = [], [], {"gt": 0, "pred": 0}
                     if label in preds[image_path]:
                         pred_masks, pred_scores = preds[image_path][label]
                         combined_gt_mask = torch.any(torch.from_numpy(gt_masks), dim=0, keepdim=True)[0]
@@ -80,6 +83,8 @@ def eval_baseline(sam_output_path, test_folder_path, visualize=False, visualize_
                         iou_dict[label].append(iou)
                         dice = utils.calculate_dice(combined_gt_mask, combined_pred_mask)
                         dice_dict[label].append(dice)
+                        image_level_accuracy[label]["gt"] += 1
+                        image_level_accuracy[label]["pred"] += 1
                         
                         if visualize:
                             utils.save_masked_image(utils.read_image_path(os.path.join(test_folder_path,image_path)), combined_gt_mask, visualize_output_path, os.path.splitext(os.path.basename(image_path))[0], "_".join(("gt", label)))
@@ -97,6 +102,7 @@ def eval_baseline(sam_output_path, test_folder_path, visualize=False, visualize_
                     else:
                         iou_dict[label].append(0)
                         dice_dict[label].append(0)
+                        image_level_accuracy[label]["gt"] += 1
                         if visualize:
                             combined_gt_mask = torch.any(torch.from_numpy(gt_mask_dict[label]), dim=0, keepdim=True)[0]
                             utils.save_masked_image(utils.read_image_path(os.path.join(test_folder_path,image_path)), combined_gt_mask, visualize_output_path, os.path.splitext(os.path.basename(image_path))[0], "_".join(("gt", label)))
@@ -134,26 +140,35 @@ def eval_baseline(sam_output_path, test_folder_path, visualize=False, visualize_
         if len(ious) == 0:
             print(f"{label}: NO IOUs")
             continue
-        print(f"{label}: {sum(ious)/len(ious)}")
+        print(f"{label}: {sum(ious)/len(ious):.4f}")
         avg_ious += sum(ious)/len(ious)
         count += 1
-    print(f"Average IOU: {avg_ious/count}\n")
+    print(f"Average IOU: {avg_ious/count:.4f}\n")
     
     avg_dices, count = 0, 0
     for label, dices in dice_dict.items():
         if len(dices) == 0:
             print(f"{label}: NO DICEs")
             continue
-        print(f"{label}: {sum(dices)/len(dices)}")
+        print(f"{label}: {sum(dices)/len(dices):.4f}")
         avg_dices += sum(dices)/len(dices)
         count += 1
-    print(f"Average DICE: {avg_dices/count}")
+    print(f"Average DICE: {avg_dices/count:.4f}\n")
+
+    avg_acc_list = []
+    for label, acc in image_level_accuracy.items():
+        if acc["gt"] == 0:
+            print(f"{label}: NO GROUND TRUTH")
+            continue
+        avg_acc_list.append(acc["pred"]/acc["gt"])
+        print(f"{label}: {acc["pred"]}/{acc["gt"]} | {acc["pred"]/acc["gt"]:.4f}")
+    print(f"Average Image-level Accuracy: {sum(avg_acc_list)/len(avg_acc_list):.4f}")
     return
 
 if __name__ == "__main__":
     sam_output_path = "./outputs/sam_output.pickle"
     test_folder_path = "../../RollingsAccessibility/test_images"
     visualize_output_path="./outputs/visualized/baseline/v1"
-    visualize = True
+    visualize = False
     eval_baseline(sam_output_path, test_folder_path, visualize=visualize, visualize_output_path=visualize_output_path)
     

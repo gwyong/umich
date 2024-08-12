@@ -34,6 +34,22 @@ def preprocess_caption(caption: str) -> str:
         return result
     return result + "."
 
+def plot_results(pil_img, scores, labels, boxes):
+    COLORS = [[0.000, 0.447, 0.741], [0.850, 0.325, 0.098], [0.929, 0.694, 0.125],
+              [0.494, 0.184, 0.556], [0.466, 0.674, 0.188], [0.301, 0.745, 0.933]]
+    plt.figure(figsize=(16,10))
+    plt.imshow(pil_img)
+    ax = plt.gca()
+    colors = COLORS * 100
+    for score, label, (xmin, ymin, xmax, ymax), c in zip(scores, labels, boxes, colors):
+        ax.add_patch(plt.Rectangle((xmin, ymin), xmax - xmin, ymax - ymin,
+                                   fill=False, color=c, linewidth=3))
+        label = f'{label}: {score:0.2f}'
+        ax.text(xmin, ymin, label, fontsize=15,
+                bbox=dict(facecolor='yellow', alpha=0.5))
+    plt.axis('off')
+    plt.show()
+
 def show_mask(mask, ax, score, color):
     cmap = ListedColormap(['none', color])
     ax.imshow(mask, cmap=cmap, alpha=0.5)
