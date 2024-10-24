@@ -125,7 +125,10 @@ def save_masked_image(image, mask, output_directory, image_name, mask_number):
 
     masked_image_pil = Image.fromarray(masked_image.astype(np.uint8))
 
-    image_basename = os.path.splitext(image_name)[0]
+    if len(os.path.splitext(image_name)) == 1:
+        image_basename = os.path.splitext(image_name)[0]
+    else:
+        image_basename = "".join(os.path.splitext(image_name))
     output_path = os.path.join(output_directory, image_basename)
     os.makedirs(output_path, exist_ok=True)
 
