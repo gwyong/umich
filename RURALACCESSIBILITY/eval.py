@@ -131,7 +131,6 @@ def eval_baseline(sam_output_path, test_folder_path, visualize=False, visualize_
                     for gt_position in gt_label_positions:
                         label, gt_position = gt_position
                         image = utils.add_label(image, label, position=gt_position, color=(0, 255, 0), font_size=30)
-
                 total_mask_path = os.path.join(visualize_output_path, os.path.splitext(os.path.basename(image_path))[0], "total.png")
                 image.save(total_mask_path)
 
@@ -167,8 +166,8 @@ def eval_baseline(sam_output_path, test_folder_path, visualize=False, visualize_
 
 if __name__ == "__main__":
     sam_output_path = "./outputs/sam_output.pickle"
-    test_folder_path = "../../RollingsAccessibility/test_images"
-    visualize_output_path="./outputs/visualized/baseline/v1"
-    visualize = False
+    # test_folder_path = "../../RollingsAccessibility/test_images"
+    visualize_output_path="./outputs/visualized/baseline/v2"
+    visualize = True
     eval_baseline(sam_output_path, test_folder_path, visualize=visualize, visualize_output_path=visualize_output_path)
     
